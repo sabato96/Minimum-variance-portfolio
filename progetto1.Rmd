@@ -1,0 +1,299 @@
+---
+title: "Project1"
+author: "Gargiulo,Santonicola,Ambrosio"
+date: "28/9/2020"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 4
+  html_document: 
+    code_folding: hide
+fontsize: 11pt
+urlcolor: blue
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+load(".Rdata")
+library(shiny)
+library(plotly)
+library(tidyverse)
+library(DT)
+library(magrittr)
+library(plyr)
+library(ggplot2)
+```
+
+\newpage
+
+Applicazione Shiny interattiva: 
+[clicca qui](https://sgargiulo14.shinyapps.io/Project_Fasano1)
+
+
+# Serie storiche: API calling
+
+La serie storiche giornaliere delle azioni US scelte sono state reperite attraverso il servizio API offerto da [alphavantage](https://www.alphavantage.com/) e il pacchetto [alphavantager](https://github.com/business-science/alphavantager), che permette con funzioni semplici di interrogare il database di alphavantage e scaricare le serie storiche desiderate.
+
+Dopo un'elaborazione preliminare dei dati, i prezzi di chiusura si presentano come segue:
+
+```{r}
+knitr::kable(data[1:20,],caption = "Prezzi di chiusura", digits = 4, "pipe")
+```
+\newpage
+
+# Log-rendimenti e statistiche
+
+La sequenza di rendimenti target è la seguente (l'output di cui sotto si limita solo ai primi 10 elementi):
+
+```{r}
+lo.tar=0.005
+up.tar=0.5
+target <- seq(lo.tar,up.tar,by=0.005)
+target[1:10]
+```
+
+Essa va da 0.005 a 0.5, in step di 0.005.
+
+
+A questo punto possiamo calcolare i log-rendimenti giornalieri.
+
+```{r}
+R <- diff(as.matrix(log(data[,2:ncol(data)])))
+time <- data[,1]
+R <- data.frame(time=time[-1],R)
+knitr::kable(R[1:10,],caption = "Log-rendimenti", digits = 4, "pipe")
+```
+
+Calcoliamo rendimenti attesi $\mu$ e matrice $\Sigma$
+
+
+```{r,options(width = 300)}
+R <- diff(as.matrix(log(data[,2:ncol(data)])))
+e.r <- matrix(apply(R,2,mean)) #Vettore dei rendimenti attesi
+rownames(e.r) <- names(data[2:length(data)])
+colnames(e.r) <- "mu"
+s.d <-matrix(apply(R,2,sd)) # Deviazione standard rendimenti
+Sig <- cov(R) #Matrice varianze covarianze (S nella parte teorica allegata)
+
+knitr::kable(e.r,caption = "mu", digits = 4, "pipe")
+knitr::kable(Sig,caption = "var-cov", digits = 8, "pipe")
+```
+
+
+
+Utilizziamo poi la funzione solve() per calcolare l'inversa della matrice $\Sigma$ e creiamo altresì un vettore unitario con lunghezza pari al numero di società presenti nel portafoglio.
+
+```{r}
+S.inv <- solve(Sig)   #Inversa della Matrice delle varianze e covarianze
+unit <- matrix(rep(1,length(e.r))) #Vettore unitario di lunghezza pari al 
+                                    #numero di STOCK
+```
+
+\newpage
+
+# Calcolo vettore ottimale di pesi
+
+Adesso procediamo a calcolare i coefficienti $a,b,c$ necessari per ottenere il vettore di pesi ottimale $w^*$:
+
+$$
+a = \mu^{'} \textbf{S}^{-1} \mu\ 
+$$
+$$
+b = \mu^{'} \textbf{S}^{-1} \textbf{1} 
+$$
+$$
+c = \textbf{1}^{'} \textbf{S}^{-1} \textbf{1}
+$$
+
+```{r}
+e.r <- matrix(apply(R,2,mean))
+A<-t(e.r)%*%S.inv%*%e.r
+B<-t(e.r)%*%S.inv%*%unit
+C<-t(unit)%*%S.inv%*%unit
+data.frame(A=A,B=B,C=C)
+```
+
+
+Fissato allora un valore del rendimento target possiamo procedere al calcolo del vettore $w^*$, che minimizza la varianza del portafoglio dato un livello del rendimento target.
+
+
+$$
+w^* = \textbf{S}^{-1} \frac{
+(mc-b)\mu \ + \ (a-\mu b)\textbf{1} 
+}{
+ac-b^2
+}
+$$
+Possiamo adesso calcolare la varianza corrispondente ad un portafoglio formato dai titoli con pesi pari a $w^*$
+
+$$
+\sigma_{R}^2 = w^{*'} \textbf{S} w^*
+$$
+Scegliamo ad esempio $m=0.05$ e calcoliamo il vettore dei pesi con la corrispondente varianza:
+
+```{r}
+m = 0.05 #Fisso rendimento target
+
+num <- e.r%*%(m*C-B)+unit%*%(A-m*B)   #Numeratore della formula per il 
+                                      #calcolo del vettore dei pesi 
+
+den <- A*C - B^2                      #Denominatore
+
+w.star <- S.inv%*%num%*%(1/den)    #Vettore dei pesi
+
+var.star <- t(w.star)%*%Sig%*%w.star #Calcoliamo la varianza del portafoglio 
+                                     #dati i pesi ottimali w*
+
+colnames(w.star)="weights"
+
+res <- list("weights" =w.star,
+            "variance"=var.star)
+res
+```
+
+
+La procedura di cui sopra è stata applicata per ogni livello della sequenza di rendimenti target attraverso una funzione personalizzata in R mediante l'utilizzo di un for loop.
+La funzione è la seguente:
+
+```{r}
+
+calc <- function(data,up.tar=0.5,lo.tar=0.005){
+
+  target <- seq(lo.tar,up.tar,by=0.005)  # Crea la sequenza di rendimenti target 
+R <- diff(as.matrix(log(data[,2:ncol(data)]))) #Rendimenti daily logaritmici
+                                                #(r nel file di teoria)
+
+e.r <- matrix(apply(R,2,mean)) #Vettore dei rendimenti attesi
+
+s.d <-matrix(apply(R,2,sd)) # Deviazione standard rendimenti
+
+Sig <- cov(R) #Matrice varianze covarianze 
+              #(S nella parte teorica allegata)
+
+S.inv <- solve(Sig)   #Inversa della Matrice delle varianze e covarianze
+
+unit <- matrix(rep(1,length(e.r))) #Vettore unitario di lunghezza
+                                   # pari al numero di azioni presenti
+
+
+
+
+#Coefficienti a,b,c
+A<-t(e.r)%*%S.inv%*%e.r
+B<-t(e.r)%*%S.inv%*%unit
+C<-t(unit)%*%S.inv%*%unit
+
+
+#res <- matrix(0,ncol=ncol(data)-1,nrow=length(target))
+
+all.w <- list() #Lista vuota ove confluiranno i risultati del for loop
+
+var.vec <- vector("numeric",length=length(target))  
+#vettore vuoto dove confluiranno i risultati del for loop
+
+
+# FOR LOOP
+
+for (i in 1:length(target)){
+
+m <- target[i] #Rendimento target
+
+
+num <- e.r%*%(m*C-B)+unit%*%(A-m*B) #Numeratore della formula per il calcolo 
+                                    #del vettore dei pesi 
+
+den <- A*C - B^2                        #Denominatore
+
+w.star <- S.inv%*%num%*%(1/den)    #Vettore dei pesi
+
+
+var.star <- t(w.star)%*%Sig%*%w.star 
+#Calcoliamo la varianza del portafoglio dati i pesi ottimali w*
+
+
+res <- list("weights" =w.star,
+            "variance"=var.star)
+
+all.w[[i]] <- res 
+# Conterrà i pesi ottimali e la varianza per ogni possibile rendimento target
+
+
+var.vec[i] <- var.star 
+#Conterrà solo la varianza per ogni possibile rendimento target
+
+#t(w.star)%*%e.r    #prova che il vettore ottimale dei pesi trasposto * per i                             #rendimenti attesi, è pari a 0.01, cioè il rendimento target
+#sum(w.star)      #prova che la somma dei pesi è 1
+#t(w.star)%*%unit   #prova che la somma dei pesi è 1
+}
+
+plot.data <- cbind(target,var.vec) #Creare dataframe da cui plottare grafico
+
+names(all.w) <- as.character(target) #Associare nomi alla lista
+
+invisible(list("all.w"=all.w,"plot"=plot.data))}
+```
+
+La funzione permette anche di caratterizzare l'intervallo entro cui calcolare i rendimenti target. 
+
+L'output della funzione è una lista che comprende a sua volta una lista e un data.frame. La prima contiene il vettore $w^*$ e la rispettiva varianza per ogni livello del rendimento target. Il data.frame, invece, serve per il grafico. Infatti contiene sia i livelli target sia la varianza minima corrispondente associata a tale livello.
+
+# Plot
+```{r,fig.align='center'}
+output <- calc(data)
+xx <- as.data.frame(output[["plot"]])
+
+xxx <- matrix(0,nrow=6,ncol=2)
+
+for(i in 1:6){
+  
+  xxx[i,1] = mean(R[,i])
+  xxx[i,2] = sd(R[,i])^2
+  
+}
+xxx <- as.data.frame(xxx)
+pick <- c("AMD","LMT","MSFT","NEM","PFE","UTX")
+colnames(xxx) <- c("mu","sig")
+rownames(xxx) <- pick
+
+
+ggplot(data=xx, aes(x=var.vec, y=target))+geom_line(color="red")+
+  xlab("Variance")+ylab("Expected return") 
+```
+
+
+\newpage
+
+# Output
+Infine abbiamo costruito una tabella che sintetizza al meglio i risultati ottenuti.
+
+```{r}
+            
+
+
+df.pick <- as.matrix(data[,pick])
+
+
+dat <- as.data.frame(output[["plot"]])
+
+weig <- array(NA, dim= c(length(pick),1,length(output$all.w))) #creiamo array 
+#vuoto in cui estrarre il vettore dei pesi per ogni livello del rend. target
+
+for(i in 1:length(output$all.w)){
+
+  weig[,1,i] <- output %>% extract2(c(1,i,1)) #con extract2 estraggo gli elementi
+  #dalla lista e li salvo nella posizione i-esima dell'array
+
+}
+
+weig.f <- adply(weig, c(2,3))[,c(-1,-2)] #trasforma l'array in un data.frame
+
+names(weig.f) <- pick
+
+dat.f <- cbind(dat,weig.f) #Uniamo i due data.frame 
+
+dat.f[,c(-1)] <- round(dat.f[,c(-1)], digits = 4) #Arrotondiamo i valori dei pesi
+
+knitr::kable(dat.f,caption = "Risultati","pipe") #Creo tabella
+
+```
+
