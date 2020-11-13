@@ -1,6 +1,6 @@
 ---
 title: "Project1"
-author: "Gargiulo,Santonicola,Ambrosio"
+author: "*****************"
 date: "28/9/2020"
 output:
   pdf_document:
@@ -27,7 +27,7 @@ library(ggplot2)
 \newpage
 
 Applicazione Shiny interattiva: 
-[clicca qui](https://sgargiulo14.shinyapps.io/Project_Fasano1)
+
 
 
 # Serie storiche: API calling
